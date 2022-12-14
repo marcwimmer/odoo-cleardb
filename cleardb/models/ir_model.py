@@ -7,5 +7,6 @@ class Model(models.Model):
 
     def _reflect_model_params(self, model):
         res = super(Model, self)._reflect_model_params(model)
-        res['clear_db'] = getattr(model, '_clear_db', False)
+        if hasattr(model, '_clear_db'):
+            res['clear_db'] = getattr(model, '_clear_db')
         return res
