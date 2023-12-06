@@ -1,6 +1,9 @@
 import arrow
+import time
+import random
 import psycopg2
 from odoo import tools
+from odoo import registry
 import os
 from odoo import _, api, fields, models, SUPERUSER_ID
 from odoo.exceptions import UserError, RedirectWarning, ValidationError
@@ -12,8 +15,21 @@ from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
 from odoo.tools import DEFAULT_SERVER_DATE_FORMAT
 from contextlib import closing
 from odoo.tools import table_exists
+import threading
 
 logger = logging.getLogger("cleardb")
+
+
+def logtime(method, name):
+    def wrapper(*args, **kwargs):
+        started = arrow.get()
+        result = method(*args, **kwargs)
+        seconds = (arrow.get() - started).total_seconds()
+        logger.info(f"{name} took {seconds}s")
+
+        return result
+
+    return wrapper
 
 
 class JustDelete(Exception):
@@ -42,9 +58,9 @@ class ClearDB(models.AbstractModel):
 
         self.show_sizes()
         # self._clear_constraint()
-        # self._clear_tables()
-        self._clear_custom_functions()
-        self._clear_fields()
+        self._clear_tables()
+        # self._clear_custom_functions()
+        # self._clear_fields()
 
         self.show_sizes()
 
@@ -61,6 +77,9 @@ class ClearDB(models.AbstractModel):
             .strftime(DEFAULT_SERVER_DATETIME_FORMAT),
             "ONE_WEEK_AGO": arrow.get()
             .shift(months=-1)
+            .strftime(DEFAULT_SERVER_DATETIME_FORMAT),
+            "ONE_DAY_AGO": arrow.get()
+            .shift(days=-1)
             .strftime(DEFAULT_SERVER_DATETIME_FORMAT),
         }
         data = {k: wrap(v) for k, v in data.items()}
@@ -112,6 +131,8 @@ class ClearDB(models.AbstractModel):
             if not table_exists(self.env.cr, table):
                 logger.info(f"Truncating: Table {table} does not exist, continuing")
                 continue
+            if table == "stock_move":
+                breakpoint()
             logger.info(f"Clearing table {table}")
             try:
                 if isinstance(cleardb, str):
@@ -126,20 +147,67 @@ class ClearDB(models.AbstractModel):
                         )
             except JustDelete:
                 try:
-                    with self._cr.savepoint(), tools.mute_logger("odoo.sql_db"):
-                        where = cleardb if isinstance(cleardb, str) else "1=1"
-                        for k, v in self._sql_params().items():
-                            where = where.replace(k, v)
-                        self.env.cr.execute(f"delete from {table} where {where}")
+                    self._delete_table(table, cleardb)
                 except psycopg2.Error as ex:
                     raise ValidationError(f"It fails here: delete from {table}: {ex}")
 
             self._vacuum_table(table)
 
     @api.model
+    def _delete_table(self, table, cleardb, workers=50, tuple_size=300):
+        where = cleardb if isinstance(cleardb, str) else "1=1"
+        for k, v in self._sql_params().items():
+            where = where.replace(k, v)
+
+        self.env.cr.execute(f"select id from {table} where {where}")
+        self.env.cr.commit()
+        ids = [x[0] for x in self.env.cr.fetchall()]
+        batches = []
+        batch_size = len(ids) // workers
+        if not batch_size:
+            logger.info(f"Nothing to delete in {table}")
+            return
+        batches = [ids[i : i + batch_size] for i in range(0, len(ids), batch_size)]
+
+        threads = []
+        for i, batch in enumerate(batches):
+
+            def work(cr, batch, i):
+                with closing(cr):
+                    subbatches = [
+                        tuple(batch[i : i + tuple_size])
+                        for i in range(0, len(batch), tuple_size)
+                    ]
+                    for i2, subbatch in enumerate(subbatches):
+                        logger.info(
+                            f"deleting {table} batch {i2} of {len(subbatches)} with each {tuple_size} items"
+                        )
+
+                        while True:
+                            try:
+                                with cr.savepoint(), tools.mute_logger("odoo.sql_db"):
+                                    cr.execute(
+                                        f"delete from {table} where id in %s",
+                                        (subbatch,),
+                                    )
+                            except psycopg2.errors.SerializationFailure:
+                                cr.rollback()
+                                time.sleep(random.randint(1,5))
+                            else:
+                                break
+                        cr.commit()
+
+            cr = registry(self.env.cr.dbname).cursor()
+            t = threading.Thread(target=work, args=(cr, batch, i))
+            t.start()
+            threads.append(t)
+        [x.join() for x in threads]
+
+    @api.model
     def _vacuum_table(self, table):
         self.env.cr.commit()
         with closing(self.env.registry.cursor()) as cr_tmp:
+            breakpoint()
             logger.info(f"vacuum full on {table}")
             cr_tmp.autocommit(True)
             cr_tmp.execute(f"VACUUM FULL {table}")
@@ -170,10 +238,16 @@ class ClearDB(models.AbstractModel):
                 logger.info(f"Table {table} does not exist, continuing")
                 continue
             logger.info(f"Droping {table} constrain {constrain}")
+            self.env.cr.commit()
             with self._cr.savepoint():
-                self.env.cr.execute(
-                    f"alter table {table} drop constraint {constrain}; "
-                )
+                try:
+                    self.env.cr.execute(
+                        f"alter table {table} drop constraint {constrain}; "
+                    )
+                except psycopg2.errors.UndefinedObject:
+                    self.env.cr.rollback()
+                    logger.info(f"Not found {constrain}")
+            self.env.cr.commit()
 
     @api.model
     def show_sizes(self):
