@@ -140,6 +140,7 @@ class ClearDB(models.AbstractModel):
     def _vacuum_table(self, table):
         self.env.cr.commit()
         with closing(self.env.registry.cursor()) as cr_tmp:
+            logger.info(f"vacuum full on {table}")
             cr_tmp.autocommit(True)
             cr_tmp.execute(f"VACUUM FULL {table}")
 
