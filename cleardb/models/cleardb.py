@@ -11,8 +11,9 @@ from odoo.modules import load_information_from_description_file
 from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
 from odoo.tools import DEFAULT_SERVER_DATE_FORMAT
 from contextlib import closing
+from odoo.tools import table_exists
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("cleardb")
 
 
 class JustDelete(Exception):
@@ -41,7 +42,7 @@ class ClearDB(models.AbstractModel):
 
         self.show_sizes()
         # self._clear_constraint()
-        #self._clear_tables()
+        # self._clear_tables()
         self._clear_custom_functions()
         self._clear_fields()
 
@@ -66,18 +67,26 @@ class ClearDB(models.AbstractModel):
         return data
 
     @api.model
+    def _yield_fields(self, prefix):
+        for att in dir(self):
+            if att.startswith(prefix):
+                yield from self[att]
+
+    @api.model
     def _get_clear_tables(self):
         for model in self.env.keys():
             obj = self.env[model]
             if not hasattr(obj, "_clear_db"):
                 continue
 
-            yield obj._table, obj._clear_db
-        yield from [(x, True) for x in ClearDB._complete_clear]
+            yield (obj._table, obj._clear_db)
+
+        for table in self._yield_fields("_complete_clear"):
+            yield (table, True)
 
     @api.model
     def _get_clear_fields(self):
-        yield from ClearDB._nullify_columns
+        yield from [x.split(":") for x in self._yield_fields("_nullify_columns")]
 
         for model in self.env.keys():
             obj = self.env[model]
@@ -85,12 +94,7 @@ class ClearDB(models.AbstractModel):
                 objfield = obj._fields[field]
                 if not hasattr(objfield, "cleardb"):
                     continue
-
-        for objfield in self.env["ir.model.fields"].search([("clear_db", "=", True)]):
-            pass
-        # obj = self.env.get(model.model, False)
-        # if getattr(obj, 'clear_db', False):
-        # yield model.model
+                yield (obj._table, field)
 
     @api.model
     def _clear_custom_functions(self):
@@ -99,7 +103,8 @@ class ClearDB(models.AbstractModel):
             for att in dir(obj):
                 if att.startswith("_clear_db_"):
                     logger.info(f"Executing: {att}")
-                    exec(f"obj.{att}()", {'obj': obj})
+                    exec(f"obj.{att}()", {"obj": obj})
+                    self.env.cr.commit()
 
     @api.model
     def _clear_tables(self):
@@ -139,8 +144,8 @@ class ClearDB(models.AbstractModel):
             cr_tmp.execute(f"VACUUM FULL {table}")
 
     def _clear_fields(self):
-        for table in ClearDB._nullify_columns:
-            table, field = table.split(":")
+        tables = set()
+        for table, field in self._get_clear_fields():
             table = table.replace(".", "_")
             if not table_exists(self.env.cr, table):
                 logger.info(
@@ -151,9 +156,13 @@ class ClearDB(models.AbstractModel):
             self.env.cr.execute(
                 f"update {table} set {field} = null where {field} is not null; "
             )
+            self.env.cr.commit()
+            tables.add(table)
+        for table in tables:
+            self._vacuum_table(table)
 
     def _clear_constraint(self):
-        for table in ClearDB._constraint_drop:
+        for table in self._yield_fields("_constraint_drop"):
             table, constrain = table.split(":")
             table = table.replace(".", "_")
             if not table_exists(self.env.cr, table):
