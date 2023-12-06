@@ -10,6 +10,7 @@ from odoo.tools import config
 from odoo.modules import load_information_from_description_file
 from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
 from odoo.tools import DEFAULT_SERVER_DATE_FORMAT
+from contextlib import closing
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,10 @@ class ClearDB(models.AbstractModel):
                         self.env.cr.execute(f"delete from {table} where {where}")
                 except psycopg2.Error as ex:
                     raise ValidationError(f"It fails here: delete from {table}: {ex}")
-            self.env.cr.execute(f"vacuum full {table}")
+
+            with closing(self.env.registry.cursor()) as cr_tmp:
+                cr_tmp.autocommit(True)
+                cr_tmp.execute(f"VACUUM FULL {table}")
 
     def _clear_fields(self):
         for table in ClearDB._nullify_columns:
