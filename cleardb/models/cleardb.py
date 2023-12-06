@@ -57,7 +57,7 @@ class ClearDB(models.AbstractModel):
             return
 
         self.show_sizes()
-        # self._clear_constraint()
+        self._clear_constraint()
         #self._clear_tables()
         self._clear_custom_functions()
         # self._clear_fields()
@@ -239,14 +239,13 @@ class ClearDB(models.AbstractModel):
                 continue
             logger.info(f"Droping {table} constrain {constrain}")
             self.env.cr.commit()
-            with self._cr.savepoint():
-                try:
+            try:
+                with self.env.cr.savepoint():
                     self.env.cr.execute(
                         f"alter table {table} drop constraint {constrain}; "
                     )
-                except psycopg2.errors.UndefinedObject:
-                    self.env.cr.rollback()
-                    logger.info(f"Not found {constrain}")
+            except psycopg2.errors.UndefinedObject:
+                logger.info(f"Not found {constrain}")
             self.env.cr.commit()
 
     @api.model
