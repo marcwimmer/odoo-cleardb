@@ -8,15 +8,15 @@ from odoo.tools import config
 from odoo.modules import load_information_from_description_file
 logger = logging.getLogger(__name__)
 
+class JustDelete(Exception):
+    pass
+
 class ClearDB(models.AbstractModel):
     _name = 'frameworktools.cleardb'
 
     _complete_clear = [
         'queue.job', 'mail.followers', 'mail_followers_mail_message_subtype_rel',
         'bus.bus', 'auditlog.log', 'auditlog.log.line', 'mail_message', 'ir_attachment',
-    ]
-    _nullify_columns = [
-        # 'ir.attachment:db_datas', 'ir.attachment:index_content',
     ]
 
     @api.model
@@ -26,6 +26,7 @@ class ClearDB(models.AbstractModel):
             return
 
         self.show_sizes()
+        self._clear_constraint()
         self._clear_tables()
         self._clear_fields()
 
@@ -42,8 +43,12 @@ class ClearDB(models.AbstractModel):
     def _get_clear_fields(self):
         yield from ClearDB._nullify_columns
 
-        # TODO implement clear fields
-        # for model in self.env['ir.model'].search([]):
+        for model in self.env.keys():
+            obj = self.env[model]
+            for field in obj._fields:
+                objfield 
+
+        for objfield in self.env['ir.model.fields'].search([('clear_db', '=', True)]):
         # obj = self.env.get(model.model, False)
         # if getattr(obj, 'clear_db', False):
         # yield model.model
@@ -56,7 +61,20 @@ class ClearDB(models.AbstractModel):
                 logger.info(f"Truncating: Table {table} does not exist, continuing")
                 continue
             logger.info(f"Clearing table {table}")
-            self.env.cr.execute("truncate table {} cascade".format(table))
+            try:
+                with self._cr.savepoint():
+                    self.env.cr.execute(f"truncate table {table} cascade")
+                    self.env.cr.execute("select count(*) from res_users;")
+                    if not self.env.cr.fetchone()[0]:
+                        raise JustDelete(
+                            f"It is not intended that res_users is totally cleared. Happend with: {table}"
+                        )
+            except JustDelete:
+                try:
+                    with self._cr.savepoint(), tools.mute_logger("odoo.sql_db"):
+                        self.env.cr.execute(f"truncate table {table}")
+                except psycopg2.Error:
+                    raise ValidationError(f"It fails here: delete from {table}")
 
     def _clear_fields(self):
         for table in ClearDB._nullify_columns:
@@ -67,6 +85,17 @@ class ClearDB(models.AbstractModel):
                 continue
             logger.info(f"Clearing {field} at {table}")
             self.env.cr.execute(f"update {table} set {field} = null where {field} is not null; ")
+
+    def _clear_constraint(self):
+        for table in ClearDB._constraint_drop:
+            table, constrain = table.split(":")
+            table = table.replace(".", "_")
+            if not table_exists(self.env.cr, table):
+                logger.info(f"Table {table} does not exist, continuing")
+                continue
+            logger.info(f"Droping {table} constrain {constrain}")
+            with self._cr.savepoint():
+                self.env.cr.execute(f"alter table {table} drop constraint {constrain}; ")
 
     @api.model
     def show_sizes(self):
