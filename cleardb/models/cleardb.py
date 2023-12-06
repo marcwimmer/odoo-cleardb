@@ -58,9 +58,9 @@ class ClearDB(models.AbstractModel):
 
         self.show_sizes()
         self._clear_constraint()
-        #self._clear_tables()
         self._clear_custom_functions()
-        # self._clear_fields()
+        self._clear_tables()
+        self._clear_fields()
 
         self.show_sizes()
 
@@ -232,7 +232,10 @@ class ClearDB(models.AbstractModel):
 
     def _clear_constraint(self):
         for table in self._yield_fields("_constraint_drop"):
-            table, constrain = table.split(":")
+            try:
+                table, constrain = table.split(":")
+            except ValueError:
+                breakpoint()
             table = table.replace(".", "_")
             if not table_exists(self.env.cr, table):
                 logger.info(f"Table {table} does not exist, continuing")
