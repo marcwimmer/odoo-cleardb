@@ -70,7 +70,7 @@ class ClearDB(models.AbstractModel):
     def _yield_fields(self, prefix):
         for att in dir(self):
             if att.startswith(prefix):
-                yield from self[att]
+                yield from getattr(self, att)
 
     @api.model
     def _get_clear_tables(self):
@@ -103,7 +103,7 @@ class ClearDB(models.AbstractModel):
             for att in dir(obj):
                 if att.startswith("_clear_db_"):
                     logger.info(f"Executing: {att}")
-                    exec(f"obj.{att}()", {"obj": obj})
+                    getattr(obj, att)()
                     self.env.cr.commit()
 
     @api.model
