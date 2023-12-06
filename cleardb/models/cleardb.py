@@ -41,8 +41,9 @@ class ClearDB(models.AbstractModel):
 
         self.show_sizes()
         # self._clear_constraint()
-        self._clear_tables()
-        # self._clear_fields()
+        #self._clear_tables()
+        self._clear_custom_functions()
+        self._clear_fields()
 
         self.show_sizes()
 
@@ -92,6 +93,15 @@ class ClearDB(models.AbstractModel):
         # yield model.model
 
     @api.model
+    def _clear_custom_functions(self):
+        for model in self.env.keys():
+            obj = self.env[model]
+            for att in dir(obj):
+                if att.startswith("_clear_db_"):
+                    logger.info(f"Executing: {att}")
+                    exec(f"obj.{att}()", {'obj': obj})
+
+    @api.model
     def _clear_tables(self):
         for table, cleardb in self._get_clear_tables():
             if not table_exists(self.env.cr, table):
@@ -119,9 +129,14 @@ class ClearDB(models.AbstractModel):
                 except psycopg2.Error as ex:
                     raise ValidationError(f"It fails here: delete from {table}: {ex}")
 
-            with closing(self.env.registry.cursor()) as cr_tmp:
-                cr_tmp.autocommit(True)
-                cr_tmp.execute(f"VACUUM FULL {table}")
+            self._vacuum_table(table)
+
+    @api.model
+    def _vacuum_table(self, table):
+        self.env.cr.commit()
+        with closing(self.env.registry.cursor()) as cr_tmp:
+            cr_tmp.autocommit(True)
+            cr_tmp.execute(f"VACUUM FULL {table}")
 
     def _clear_fields(self):
         for table in ClearDB._nullify_columns:

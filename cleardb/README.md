@@ -1,10 +1,14 @@
 # cleardb
 
+## How to run
+
 This script is usually called with::
 
 ```
    odoo cleardb
 ```
+
+## Annotations
 
 
 To add further tables to be cleaned::
@@ -21,8 +25,16 @@ class A(models.Model):
       avalue = fields.Integer(...., cleardb=True)
 ```
 
-After that an update of your module needs to be done.
+## clear functions
 
+class A(models.Model):
+
+Must start with _clear_db.
+
+```
+@api.model
+def _clear_db_export_record_sets_from_property(self):
+```
 
 # Authors
 
