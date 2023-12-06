@@ -58,8 +58,8 @@ class ClearDB(models.AbstractModel):
 
         self.show_sizes()
         # self._clear_constraint()
-        self._clear_tables()
-        # self._clear_custom_functions()
+        #self._clear_tables()
+        self._clear_custom_functions()
         # self._clear_fields()
 
         self.show_sizes()
