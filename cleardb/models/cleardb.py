@@ -152,6 +152,13 @@ class ClearDB(models.AbstractModel):
 
 
     @api.model
+    def _simple_delete_table(self, table, where, disable_constraints=True):
+        if disable_constraints:
+            self.env.cr.execute(f"alter table {table} disable trigger all;")
+            self.env.cr.execute(f"delete from {table} where {where}")
+            self.env.cr.execute(f"alter table {table} enable trigger all;")
+
+    @api.model
     def _delete_table(self, table, cleardb, workers=50, tuple_size=300, disable_constraints=True):
         where = cleardb if isinstance(cleardb, str) else "1=1"
         for k, v in self._sql_params().items():
