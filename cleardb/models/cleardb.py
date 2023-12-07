@@ -143,7 +143,7 @@ class ClearDB(models.AbstractModel):
                             f"It is not intended that res_users is "
                             f"totally cleared. Happend with: {table}"
                         )
-                    self._vacuum_table(table)
+                self._vacuum_table(table)
             except JustDelete:
                 try:
                     self._delete_table(table, cleardb)
