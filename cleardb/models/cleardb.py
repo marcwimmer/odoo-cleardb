@@ -57,7 +57,6 @@ class ClearDB(models.AbstractModel):
             return
 
         self.show_sizes()
-        self._clear_constraint()
         self._clear_custom_functions()
         self._clear_tables()
         self._clear_fields()
@@ -237,27 +236,6 @@ class ClearDB(models.AbstractModel):
             tables.add(table)
         for table in tables:
             self._vacuum_table(table)
-
-    def _clear_constraint(self):
-        for table in self._yield_fields("_constraint_drop"):
-            try:
-                table, constrain = table.split(":")
-            except ValueError:
-                breakpoint()
-            table = table.replace(".", "_")
-            if not table_exists(self.env.cr, table):
-                logger.info(f"Table {table} does not exist, continuing")
-                continue
-            logger.info(f"Droping {table} constrain {constrain}")
-            self.env.cr.commit()
-            try:
-                with self.env.cr.savepoint():
-                    self.env.cr.execute(
-                        f"alter table {table} drop constraint {constrain}; "
-                    )
-            except psycopg2.errors.UndefinedObject:
-                logger.info(f"Not found {constrain}")
-            self.env.cr.commit()
 
     @api.model
     def show_sizes(self):
