@@ -169,44 +169,48 @@ class ClearDB(models.AbstractModel):
             return
         batches = [ids[i : i + batch_size] for i in range(0, len(ids), batch_size)]
 
-        threads = []
-        for i, batch in enumerate(batches):
+        if disable_constraints:
+            self.env.cr.execute(f"alter table {table} disable trigger all;")
+            self.env.cr.commit()
+        try:
+            threads = []
+            for i, batch in enumerate(batches):
 
-            def work(cr, batch, i):
-                with closing(cr):
-                    subbatches = [
-                        tuple(batch[i : i + tuple_size])
-                        for i in range(0, len(batch), tuple_size)
-                    ]
-                    for i2, subbatch in enumerate(subbatches):
-                        logger.info(
-                            f"deleting {table} batch {i2} of {len(subbatches)} with each {tuple_size} items"
-                        )
+                def work(cr, batch, i):
+                    with closing(cr):
+                        subbatches = [
+                            tuple(batch[i : i + tuple_size])
+                            for i in range(0, len(batch), tuple_size)
+                        ]
+                        for i2, subbatch in enumerate(subbatches):
+                            logger.info(
+                                f"deleting {table} batch {i2} of {len(subbatches)} with each {tuple_size} items"
+                            )
 
-                        while True:
-                            try:
-                                with cr.savepoint(), tools.mute_logger("odoo.sql_db"):
-                                    if disable_constraints:
-                                        cr.execute(f"alter table {table} disable trigger all;")
-                                    cr.execute(
-                                        f"delete from {table} where id in %s",
-                                        (subbatch,),
-                                    )
-                                    if disable_constraints:
-                                        cr.execute(f"alter table {table} enable trigger all;")
-                            except psycopg2.errors.SerializationFailure:
-                                cr.rollback()
-                                time.sleep(random.randint(1,5))
-                            else:
-                                break
-                        cr.commit()
+                            while True:
+                                try:
+                                    with cr.savepoint(), tools.mute_logger("odoo.sql_db"):
+                                        cr.execute(
+                                            f"delete from {table} where id in %s",
+                                            (subbatch,),
+                                        )
+                                except psycopg2.errors.SerializationFailure:
+                                    cr.rollback()
+                                    time.sleep(random.randint(1,5))
+                                else:
+                                    break
+                            cr.commit()
 
-            cr = registry(self.env.cr.dbname).cursor()
-            t = threading.Thread(target=work, args=(cr, batch, i))
-            t.start()
-            threads.append(t)
-        [x.join() for x in threads]
+                cr = registry(self.env.cr.dbname).cursor()
+                t = threading.Thread(target=work, args=(cr, batch, i))
+                t.start()
+                threads.append(t)
+            [x.join() for x in threads]
 
+        finally:
+            if disable_constraints:
+                self.env.cr.execute(f"alter table {table} enable trigger all;")
+                self.env.cr.commit()
     @api.model
     def _vacuum_table(self, table):
         self.env.cr.commit()
