@@ -57,8 +57,9 @@ class ClearDB(models.AbstractModel):
             return
 
         self.show_sizes()
-        self._clear_custom_functions()
         self._clear_tables()
+        # place after table clear, so that cleaning up depending things works
+        self._clear_custom_functions()
         self._clear_fields()
 
         self.show_sizes()
@@ -130,8 +131,6 @@ class ClearDB(models.AbstractModel):
             if not table_exists(self.env.cr, table):
                 logger.info(f"Truncating: Table {table} does not exist, continuing")
                 continue
-            if table == "stock_move":
-                breakpoint()
             logger.info(f"Clearing table {table}")
             try:
                 if isinstance(cleardb, str):
@@ -144,13 +143,13 @@ class ClearDB(models.AbstractModel):
                             f"It is not intended that res_users is "
                             f"totally cleared. Happend with: {table}"
                         )
+                    self._vacuum_table(table)
             except JustDelete:
                 try:
                     self._delete_table(table, cleardb)
                 except psycopg2.Error as ex:
                     raise ValidationError(f"It fails here: delete from {table}: {ex}")
 
-            self._vacuum_table(table)
 
     @api.model
     def _delete_table(self, table, cleardb, workers=50, tuple_size=300, disable_constraints=True):
@@ -210,11 +209,12 @@ class ClearDB(models.AbstractModel):
             if disable_constraints:
                 self.env.cr.execute(f"alter table {table} enable trigger all;")
                 self.env.cr.commit()
+        self._vacuum_table(table)
+
     @api.model
     def _vacuum_table(self, table):
         self.env.cr.commit()
         with closing(self.env.registry.cursor()) as cr_tmp:
-            breakpoint()
             logger.info(f"vacuum full on {table}")
             cr_tmp.autocommit(True)
             cr_tmp.execute(f"VACUUM FULL {table}")
