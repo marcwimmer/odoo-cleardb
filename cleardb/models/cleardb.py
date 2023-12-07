@@ -154,7 +154,7 @@ class ClearDB(models.AbstractModel):
             self._vacuum_table(table)
 
     @api.model
-    def _delete_table(self, table, cleardb, workers=50, tuple_size=300):
+    def _delete_table(self, table, cleardb, workers=50, tuple_size=300, disable_constraints=True):
         where = cleardb if isinstance(cleardb, str) else "1=1"
         for k, v in self._sql_params().items():
             where = where.replace(k, v)
@@ -186,10 +186,14 @@ class ClearDB(models.AbstractModel):
                         while True:
                             try:
                                 with cr.savepoint(), tools.mute_logger("odoo.sql_db"):
+                                    if disable_constraints:
+                                        cr.execute(f"alter table {table} disable trigger all;")
                                     cr.execute(
                                         f"delete from {table} where id in %s",
                                         (subbatch,),
                                     )
+                                    if disable_constraints:
+                                        cr.execute(f"alter table {table} enable trigger all;")
                             except psycopg2.errors.SerializationFailure:
                                 cr.rollback()
                                 time.sleep(random.randint(1,5))
