@@ -51,10 +51,13 @@ class ClearDB(models.AbstractModel):
     ]
 
     @api.model
-    def _run(self):
+    def _run(self, no_vacuum_full=False):
         if os.environ["DEVMODE"] != "1":
             logger.error("Anonymization needs environment DEVMODE set.")
             return
+
+        if no_vacuum_full:
+            self = self.with_context(no_vacuum_full=True)
 
         self.show_sizes()
         self._clear_tables()
@@ -221,6 +224,8 @@ class ClearDB(models.AbstractModel):
     @api.model
     def _vacuum_table(self, table):
         self.env.cr.commit()
+        if self.env.context.get('no_vacuum_full'):
+            return
         with closing(self.env.registry.cursor()) as cr_tmp:
             logger.info(f"vacuum full on {table}")
             cr_tmp.autocommit(True)
