@@ -54,11 +54,11 @@ class ClearDB(models.AbstractModel):
     _nullify_columns_x1 = [
         'mrp.production:queue_job_id', 'mrp.production:queue_job_id_moved0', 'account.edi.document:attachment_id',
         'mail.channel:message_main_attachment_id', 'product.product:message_main_attachment_id',
-      .....
+        ...
 
     _constraint_drop_area1 = [
         'mrp.production:mrp_production_queue_job_id_fkey',
-        .....
+        ...
 ```
 
 # Authors
