@@ -4,7 +4,7 @@
     "auto_install": True,
     "conflicts": [],
     "css": [],
-    "data": [],
+    "data": ["views/field_form.xml", "views/model_form.xml"],
     "demo_xml": [],
     "depends": ["base"],
     "installable": True,
@@ -14,4 +14,5 @@
     "qweb": [],
     "test": [],
     "version": "1.0",
+    "demo": [],
 }

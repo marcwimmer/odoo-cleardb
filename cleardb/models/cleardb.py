@@ -8,7 +8,8 @@ import os
 from odoo import _, api, models
 from odoo.exceptions import UserError, RedirectWarning, ValidationError
 import logging
-from odoo.tools.sql import table_exists, column_exists
+from odoo.tools.sql import table_exists
+from odoo.tools.sql import column_exists
 from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
 from contextlib import closing
 import threading
@@ -35,17 +36,6 @@ class JustDelete(Exception):
 
 class ClearDB(models.AbstractModel):
     _name = "frameworktools.cleardb"
-
-    _complete_clear = [
-        "queue.job",
-        "mail.followers",
-        "mail_followers_mail_message_subtype_rel",
-        "bus.bus",
-        "auditlog.log",
-        "auditlog.log.line",
-        "mail_message",
-        "ir_attachment",
-    ]
 
     @api.model
     def _run(self, no_vacuum_full=False):
@@ -103,6 +93,10 @@ class ClearDB(models.AbstractModel):
         for table in self._yield_fields("_complete_clear"):
             yield (table, True)
 
+        for model in self.env["ir.model"].sudo().search([("clear_db", "=", True)]):
+            obj = self.env[model.model]
+            yield (obj._table, True)
+
     @api.model
     def _get_clear_fields(self):
         yield from [x.split(":") for x in self._yield_fields("_nullify_columns")]
@@ -114,6 +108,12 @@ class ClearDB(models.AbstractModel):
                 if not hasattr(objfield, "cleardb"):
                     continue
                 yield (obj._table, field)
+
+        for objfield in (
+            self.env["ir.model.fields"].sudo().search([("clear_db", "=", True)])
+        ):
+            obj = self.env[objfield.model_id.model]
+            yield (obj._table, objfield.name)
 
     @api.model
     def _clear_custom_functions(self):
@@ -172,6 +172,7 @@ class ClearDB(models.AbstractModel):
         for table in self.env.cr.fetchall():
             table = table[0]
             yield table
+            self._on_clear_table(table)
 
     @api.model
     def _simple_delete_table(self, table, where, disable_constraints=True):
