@@ -59,6 +59,11 @@ class ClearDB(models.AbstractModel):
     _constraint_drop_area1 = [
         'mrp.production:mrp_production_queue_job_id_fkey',
         ...
+
+    @api.model
+    def _on_cleared_table(table, cleardb):
+        pass
+
 ```
 
 # Authors

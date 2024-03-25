@@ -8,14 +8,14 @@ import os
 from odoo import _, api, fields, models, SUPERUSER_ID
 from odoo.exceptions import UserError, RedirectWarning, ValidationError
 import logging
-from odoo.tools.sql import table_exists
+from odoo.tools.sql import table_exists, column_exists
 from odoo.tools import config
 from odoo.modules import load_information_from_description_file
 from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
 from odoo.tools import DEFAULT_SERVER_DATE_FORMAT
 from contextlib import closing
-from odoo.tools import table_exists
 import threading
+from contextlib import contextmanager
 
 logger = logging.getLogger("cleardb")
 
@@ -152,7 +152,26 @@ class ClearDB(models.AbstractModel):
                     self._delete_table(table, cleardb)
                 except psycopg2.Error as ex:
                     raise ValidationError(f"It fails here: delete from {table}: {ex}")
+            self._on_cleared_table(table, cleardb)
 
+    @api.model
+    def _on_cleared_table(self, table, cleardb):
+        if table == "ir_attachment":
+            for table in self._iterate_all_tables():
+                if column_exists(self.env.cr, table, 'message_main_attachment_id'):
+                    self.env.cr.execute(f"update {table} set message_main_attachment_id = null where message_main_attachment_id is not null;")
+
+    @api.model
+    def _iterate_all_tables(self):
+        self.env.cr.execute(
+            (
+                "SELECT table_name FROM information_schema.tables "
+                " WHERE table_schema = 'public'"
+            )
+        )
+        for table in self.env.cr.fetchall():
+            table = table[0]
+            yield table
 
     @api.model
     def _simple_delete_table(self, table, where, disable_constraints=True):
@@ -162,7 +181,9 @@ class ClearDB(models.AbstractModel):
             self.env.cr.execute(f"alter table {table} enable trigger all;")
 
     @api.model
-    def _delete_table(self, table, cleardb, workers=50, tuple_size=300, disable_constraints=True):
+    def _delete_table(
+        self, table, cleardb, workers=50, tuple_size=300, disable_constraints=True
+    ):
         where = cleardb if isinstance(cleardb, str) else "1=1"
         for k, v in self._sql_params().items():
             where = where.replace(k, v)
@@ -197,14 +218,16 @@ class ClearDB(models.AbstractModel):
 
                             while True:
                                 try:
-                                    with cr.savepoint(), tools.mute_logger("odoo.sql_db"):
+                                    with cr.savepoint(), tools.mute_logger(
+                                        "odoo.sql_db"
+                                    ):
                                         cr.execute(
                                             f"delete from {table} where id in %s",
                                             (subbatch,),
                                         )
                                 except psycopg2.errors.SerializationFailure:
                                     cr.rollback()
-                                    time.sleep(random.randint(1,5))
+                                    time.sleep(random.randint(1, 5))
                                 else:
                                     break
                             cr.commit()
@@ -224,7 +247,7 @@ class ClearDB(models.AbstractModel):
     @api.model
     def _vacuum_table(self, table):
         self.env.cr.commit()
-        if self.env.context.get('no_vacuum_full'):
+        if self.env.context.get("no_vacuum_full"):
             return
         with closing(self.env.registry.cursor()) as cr_tmp:
             logger.info(f"vacuum full on {table}")
