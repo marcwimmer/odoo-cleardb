@@ -10,7 +10,6 @@ from odoo.exceptions import UserError, RedirectWarning, ValidationError
 import logging
 from odoo.tools.sql import table_exists, column_exists
 from odoo.tools import config
-from odoo.modules import load_information_from_description_file
 from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
 from odoo.tools import DEFAULT_SERVER_DATE_FORMAT
 from contextlib import closing
