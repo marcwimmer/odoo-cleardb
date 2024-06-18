@@ -1,76 +1,281 @@
-# ONE COMMENT
+import arrow
+import time
+import random
+import psycopg2
+from odoo import tools
+from odoo import registry
 import os
 from odoo import _, api, fields, models, SUPERUSER_ID
 from odoo.exceptions import UserError, RedirectWarning, ValidationError
 import logging
-from odoo.tools.sql import table_exists
+from odoo.tools.sql import table_exists, column_exists
 from odoo.tools import config
 from odoo.modules import load_information_from_description_file
-logger = logging.getLogger(__name__)
+from odoo.tools import DEFAULT_SERVER_DATETIME_FORMAT
+from odoo.tools import DEFAULT_SERVER_DATE_FORMAT
+from contextlib import closing
+import threading
+from contextlib import contextmanager
+
+logger = logging.getLogger("cleardb")
+
+
+def logtime(method, name):
+    def wrapper(*args, **kwargs):
+        started = arrow.get()
+        result = method(*args, **kwargs)
+        seconds = (arrow.get() - started).total_seconds()
+        logger.info(f"{name} took {seconds}s")
+
+        return result
+
+    return wrapper
+
+
+class JustDelete(Exception):
+    pass
+
 
 class ClearDB(models.AbstractModel):
-    _name = 'frameworktools.cleardb'
+    _name = "frameworktools.cleardb"
 
     _complete_clear = [
-        'queue.job', 'mail.followers', 'mail_followers_mail_message_subtype_rel',
-        'bus.bus', 'auditlog.log', 'auditlog.log.line', 'mail_message', 'ir_attachment',
-    ]
-    _nullify_columns = [
-        # 'ir.attachment:db_datas', 'ir.attachment:index_content',
+        "queue.job",
+        "mail.followers",
+        "mail_followers_mail_message_subtype_rel",
+        "bus.bus",
+        "auditlog.log",
+        "auditlog.log.line",
+        "mail_message",
+        "ir_attachment",
     ]
 
     @api.model
-    def _run(self):
-        if os.environ['DEVMODE'] != "1":
+    def _run(self, no_vacuum_full=False):
+        if os.environ["DEVMODE"] != "1":
             logger.error("Anonymization needs environment DEVMODE set.")
             return
 
+        if no_vacuum_full:
+            self = self.with_context(no_vacuum_full=True)
+
         self.show_sizes()
         self._clear_tables()
+        # place after table clear, so that cleaning up depending things works
+        self._clear_custom_functions()
         self._clear_fields()
 
         self.show_sizes()
 
+    def _sql_params(self):
+        def wrap(x):
+            return f"'{x}'"
+
+        data = {
+            "ONE_YEAR_AGO": arrow.get()
+            .shift(years=-1)
+            .strftime(DEFAULT_SERVER_DATETIME_FORMAT),
+            "ONE_MONTH_AGO": arrow.get()
+            .shift(months=-1)
+            .strftime(DEFAULT_SERVER_DATETIME_FORMAT),
+            "ONE_WEEK_AGO": arrow.get()
+            .shift(months=-1)
+            .strftime(DEFAULT_SERVER_DATETIME_FORMAT),
+            "ONE_DAY_AGO": arrow.get()
+            .shift(days=-1)
+            .strftime(DEFAULT_SERVER_DATETIME_FORMAT),
+        }
+        data = {k: wrap(v) for k, v in data.items()}
+        return data
+
+    @api.model
+    def _yield_fields(self, prefix):
+        for att in dir(self):
+            if att.startswith(prefix):
+                yield from getattr(self, att)
+
     @api.model
     def _get_clear_tables(self):
-        yield from ClearDB._complete_clear
+        for model in self.env.keys():
+            obj = self.env[model]
+            if not hasattr(obj, "_clear_db"):
+                continue
 
-        for model in self.env['ir.model'].search([('clear_db', '=', True)]):
-            yield model.model
+            yield (obj._table, obj._clear_db)
+
+        for table in self._yield_fields("_complete_clear"):
+            yield (table, True)
 
     @api.model
     def _get_clear_fields(self):
-        yield from ClearDB._nullify_columns
+        yield from [x.split(":") for x in self._yield_fields("_nullify_columns")]
 
-        # TODO implement clear fields
-        # for model in self.env['ir.model'].search([]):
-        # obj = self.env.get(model.model, False)
-        # if getattr(obj, 'clear_db', False):
-        # yield model.model
+        for model in self.env.keys():
+            obj = self.env[model]
+            for field in obj._fields:
+                objfield = obj._fields[field]
+                if not hasattr(objfield, "cleardb"):
+                    continue
+                yield (obj._table, field)
+
+    @api.model
+    def _clear_custom_functions(self):
+        for model in self.env.keys():
+            obj = self.env[model]
+            for att in dir(obj):
+                if att.startswith("_clear_db_"):
+                    logger.info(f"Executing: {att}")
+                    getattr(obj, att)()
+                    self.env.cr.commit()
 
     @api.model
     def _clear_tables(self):
-        for table in self._get_clear_tables():
-            table = table.replace(".", "_")
+        for table, cleardb in self._get_clear_tables():
             if not table_exists(self.env.cr, table):
                 logger.info(f"Truncating: Table {table} does not exist, continuing")
                 continue
             logger.info(f"Clearing table {table}")
-            self.env.cr.execute("truncate table {} cascade".format(table))
+            try:
+                if isinstance(cleardb, str):
+                    raise JustDelete()
+                with self._cr.savepoint():
+                    self.env.cr.execute(f"truncate table {table} cascade")
+                    self.env.cr.execute("select count(*) from res_users;")
+                    if not self.env.cr.fetchone()[0]:
+                        raise JustDelete(
+                            f"It is not intended that res_users is "
+                            f"totally cleared. Happend with: {table}"
+                        )
+                self._vacuum_table(table)
+            except JustDelete:
+                try:
+                    self._delete_table(table, cleardb)
+                except psycopg2.Error as ex:
+                    raise ValidationError(f"It fails here: delete from {table}: {ex}")
+            self._on_cleared_table(table, cleardb)
+
+    @api.model
+    def _on_cleared_table(self, table, cleardb):
+        if table == "ir_attachment":
+            for table in self._iterate_all_tables():
+                if column_exists(self.env.cr, table, 'message_main_attachment_id'):
+                    self.env.cr.execute(f"update {table} set message_main_attachment_id = null where message_main_attachment_id is not null;")
+
+    @api.model
+    def _iterate_all_tables(self):
+        self.env.cr.execute(
+            (
+                "SELECT table_name FROM information_schema.tables "
+                " WHERE table_schema = 'public'"
+            )
+        )
+        for table in self.env.cr.fetchall():
+            table = table[0]
+            yield table
+
+    @api.model
+    def _simple_delete_table(self, table, where, disable_constraints=True):
+        if disable_constraints:
+            self.env.cr.execute(f"alter table {table} disable trigger all;")
+            self.env.cr.execute(f"delete from {table} where {where}")
+            self.env.cr.execute(f"alter table {table} enable trigger all;")
+
+    @api.model
+    def _delete_table(
+        self, table, cleardb, workers=50, tuple_size=300, disable_constraints=True
+    ):
+        where = cleardb if isinstance(cleardb, str) else "1=1"
+        for k, v in self._sql_params().items():
+            where = where.replace(k, v)
+
+        self.env.cr.execute(f"select id from {table} where {where}")
+        self.env.cr.commit()
+        ids = [x[0] for x in self.env.cr.fetchall()]
+        batches = []
+        batch_size = len(ids) // workers
+        if not batch_size:
+            logger.info(f"Nothing to delete in {table}")
+            return
+        batches = [ids[i : i + batch_size] for i in range(0, len(ids), batch_size)]
+
+        if disable_constraints:
+            self.env.cr.execute(f"alter table {table} disable trigger all;")
+            self.env.cr.commit()
+        try:
+            threads = []
+            for i, batch in enumerate(batches):
+
+                def work(cr, batch, i):
+                    with closing(cr):
+                        subbatches = [
+                            tuple(batch[i : i + tuple_size])
+                            for i in range(0, len(batch), tuple_size)
+                        ]
+                        for i2, subbatch in enumerate(subbatches):
+                            logger.info(
+                                f"deleting {table} batch {i2} of {len(subbatches)} with each {tuple_size} items"
+                            )
+
+                            while True:
+                                try:
+                                    with cr.savepoint(), tools.mute_logger(
+                                        "odoo.sql_db"
+                                    ):
+                                        cr.execute(
+                                            f"delete from {table} where id in %s",
+                                            (subbatch,),
+                                        )
+                                except psycopg2.errors.SerializationFailure:
+                                    cr.rollback()
+                                    time.sleep(random.randint(1, 5))
+                                else:
+                                    break
+                            cr.commit()
+
+                cr = registry(self.env.cr.dbname).cursor()
+                t = threading.Thread(target=work, args=(cr, batch, i))
+                t.start()
+                threads.append(t)
+            [x.join() for x in threads]
+
+        finally:
+            if disable_constraints:
+                self.env.cr.execute(f"alter table {table} enable trigger all;")
+                self.env.cr.commit()
+        self._vacuum_table(table)
+
+    @api.model
+    def _vacuum_table(self, table):
+        self.env.cr.commit()
+        if self.env.context.get("no_vacuum_full"):
+            return
+        with closing(self.env.registry.cursor()) as cr_tmp:
+            logger.info(f"vacuum full on {table}")
+            cr_tmp.autocommit(True)
+            cr_tmp.execute(f"VACUUM FULL {table}")
 
     def _clear_fields(self):
-        for table in ClearDB._nullify_columns:
-            table, field = table.split(":")
+        tables = set()
+        for table, field in self._get_clear_fields():
             table = table.replace(".", "_")
             if not table_exists(self.env.cr, table):
-                logger.info(f"Nullifying column {field}: Table {table} does not exist, continuing")
+                logger.info(
+                    f"Nullifying column {field}: Table {table} does not exist, continuing"
+                )
                 continue
             logger.info(f"Clearing {field} at {table}")
-            self.env.cr.execute(f"update {table} set {field} = null where {field} is not null; ")
+            self.env.cr.execute(
+                f"update {table} set {field} = null where {field} is not null; "
+            )
+            self.env.cr.commit()
+            tables.add(table)
+        for table in tables:
+            self._vacuum_table(table)
 
     @api.model
     def show_sizes(self):
-        self.env.cr.execute("""
+        self.env.cr.execute(
+            """
 WITH RECURSIVE pg_inherit(inhrelid, inhparent) AS
     (select inhrelid, inhparent
     FROM pg_inherits
@@ -113,7 +318,8 @@ SELECT table_schema
   WHERE oid = parent
 ) a
 ORDER BY total_bytes DESC;
-        """)
+        """
+        )
         recs = self.env.cr.fetchall()[:10]
         logger.info("Table Disk Sizes")
         for line in recs:

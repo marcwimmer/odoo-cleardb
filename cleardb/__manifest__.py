@@ -8,6 +8,7 @@
     "demo_xml": [],
     "depends": ["base"],
     "installable": True,
+    "external_dependencies": {"python": ["arrow"]},
     "js": [],
     "name": "cleardb",
     "qweb": [],
