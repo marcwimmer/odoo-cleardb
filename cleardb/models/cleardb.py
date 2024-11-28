@@ -5,7 +5,7 @@ import psycopg2
 from odoo import tools
 from odoo import registry
 import os
-from odoo import _, api, models 
+from odoo import _, api, models
 from odoo.exceptions import UserError, RedirectWarning, ValidationError
 import logging
 from odoo.tools.sql import table_exists, column_exists
@@ -155,8 +155,11 @@ class ClearDB(models.AbstractModel):
     def _on_cleared_table(self, table, cleardb):
         if table == "ir_attachment":
             for table in self._iterate_all_tables():
-                if column_exists(self.env.cr, table, 'message_main_attachment_id'):
-                    self.env.cr.execute(f"update {table} set message_main_attachment_id = null where message_main_attachment_id is not null;")
+                if column_exists(self.env.cr, table, "message_main_attachment_id"):
+                    self.env.cr.execute(
+                        f"update {table} set message_main_attachment_id = null "
+                        "where message_main_attachment_id is not null;"
+                    )
 
     @api.model
     def _iterate_all_tables(self):
