@@ -44,7 +44,6 @@ class ClearDB(models.AbstractModel):
         "auditlog.log",
         "auditlog.log.line",
         "mail_message",
-        "ir_attachment",
     ]
 
     @api.model
@@ -92,6 +91,29 @@ class ClearDB(models.AbstractModel):
                 yield from getattr(self, att)
 
     @api.model
+    def _ir_attachment_keep_where(self):
+        """SQL WHERE expression for ir_attachment rows that MUST be kept.
+
+        cleardb's default behavior of TRUNCATE ir_attachment also wipes website
+        images, theme assets, snippet uploads, brand logos, etc., leaving the
+        filestore files orphaned and /web/image/<id>-<hash>/ requests returning
+        500. Anything matching this expression is preserved by _get_clear_tables.
+
+        Defaults keep:
+          - public attachments (everything served via /web/image and /web/content
+            without auth: theme images, snippet images, company logo)
+          - module-data attachments (xml_id-backed, e.g. icons shipped by
+            modules)
+
+        Override in your own ClearDB subclass to extend the keep set.
+        """
+        return (
+            "public IS TRUE "
+            "OR id IN (SELECT res_id FROM ir_model_data "
+            "WHERE model = 'ir.attachment')"
+        )
+
+    @api.model
     def _get_clear_tables(self):
         for model in self.env.keys():
             obj = self.env[model]
@@ -102,6 +124,12 @@ class ClearDB(models.AbstractModel):
 
         for table in self._yield_fields("_complete_clear"):
             yield (table, True)
+
+        if table_exists(self.env.cr, "ir_attachment"):
+            yield (
+                "ir_attachment",
+                "NOT (" + self._ir_attachment_keep_where() + ")",
+            )
 
     @api.model
     def _get_clear_fields(self):
