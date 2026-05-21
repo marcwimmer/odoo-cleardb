@@ -102,13 +102,24 @@ class ClearDB(models.AbstractModel):
         Defaults keep:
           - public attachments (everything served via /web/image and /web/content
             without auth: theme images, snippet images, company logo)
+          - binary-field storage rows (res_field IS NOT NULL): product images,
+            user avatars, generated invoice PDFs, payment-method icons —
+            without these the corresponding binary fields render blank
+          - website-editor custom assets (url LIKE '/_custom/%'):
+            user_values.scss, user_custom_javascript.js, etc. — the frontend
+            SCSS bundle fails to build when these are missing
           - module-data attachments (xml_id-backed, e.g. icons shipped by
             modules)
 
         Override in your own ClearDB subclass to extend the keep set.
         """
+        # COALESCE on the url LIKE because LIKE on NULL returns NULL, and
+        # "NOT (... OR NULL)" evaluates to NULL — which silently keeps every
+        # row and turns cleardb into a no-op for ir_attachment.
         return (
             "public IS TRUE "
+            "OR res_field IS NOT NULL "
+            "OR COALESCE(url LIKE '/_custom/%', FALSE) "
             "OR id IN (SELECT res_id FROM ir_model_data "
             "WHERE model = 'ir.attachment')"
         )
